@@ -16,6 +16,7 @@ New core service (proposed) — integrates with orchestrator/policy/consent/iden
 - `src/unison_actuation/app.py` — FastAPI app, routing, lifecycle hooks.
 - `src/unison_actuation/schemas.py` — Action Envelope models/validators.
 - `src/unison_actuation/drivers/` — base driver + logging, desktop stub, mock home, mock robot.
+- Optional driver stubs: MQTT adapter (`device.publish` on `device_class=mqtt`, medium risk cap).
 - `schemas/` — JSON Schema + TS typings for Action Envelope.
 - `docs/architecture.md` — service architecture and integration contract.
 - `docker/` — container entrypoint and compose hints.

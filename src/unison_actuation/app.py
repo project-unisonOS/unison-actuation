@@ -17,6 +17,7 @@ from unison_actuation.drivers.desktop_driver import DesktopAutomationDriver
 from unison_actuation.drivers.logging_driver import LoggingDriver
 from unison_actuation.drivers.mock_home_driver import MockHomeDriver
 from unison_actuation.drivers.mock_robot_driver import MockRobotDriver
+from unison_actuation.drivers.mqtt_driver import MqttDriver
 from unison_actuation.schemas import (
     ActionDecision,
     ActionEnvelope,
@@ -49,6 +50,7 @@ driver_registry = DriverRegistry(
         DesktopAutomationDriver(),
         MockHomeDriver(),
         MockRobotDriver(),
+        MqttDriver(),
     ]
 )
 
@@ -195,6 +197,10 @@ async def actuate(envelope: ActionEnvelope, decision: ActionDecision = Depends(g
         return JSONResponse(status_code=202, content=pending_payload)
 
     driver = LoggingDriver() if LOGGING_ONLY else driver_registry.route(envelope)
+    if hasattr(driver, "max_risk_level"):
+        allowed = getattr(driver, "max_risk_level")()
+        if RiskLevel(envelope.risk_level) > RiskLevel(allowed):
+            raise HTTPException(status_code=403, detail="Risk level exceeds driver allowance")
     if decision.rewritten_intent:
         envelope.intent = decision.rewritten_intent
 

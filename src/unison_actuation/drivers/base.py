@@ -37,6 +37,10 @@ class BaseDriver(abc.ABC):
     def capabilities(self) -> Iterable[Capability]:
         ...
 
+    def max_risk_level(self) -> str:
+        """Override to cap allowable risk levels for this driver ('low'|'medium'|'high')."""
+        return "high"
+
     def can_handle(self, envelope: ActionEnvelope) -> bool:
         return any(cap.matches(envelope) for cap in self.capabilities())
 
