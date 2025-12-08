@@ -49,3 +49,11 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 OTEL_SDK_DISABLED=true python -m pytest
 - Wire into `unison-devstack/docker-compose.yml`.
 - Register Action Envelope contract in `unison-docs/dev/specs`.
 - Add orchestrator “proposed_action” tool output and envelope builder.
+- Remaining roadmap:
+  - Renderer UX for actuation telemetry/confirmations.
+  - Enforce consent when no actuation grant exists (especially high-risk).
+  - Expand policy defaults for device classes/capabilities.
+  - Add real drivers (ROS2/desktop automation) with sandboxing and capability maps.
+  - Switch auth to JWT verification via unison-auth with scope checks.
+  - Add devstack smoke/CI coverage for actuation telemetry/confirmation.
+  - Move to tagged releases and update devstack to consume tags.
