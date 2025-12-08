@@ -36,6 +36,8 @@ UVICORN_RELOAD=true python -m unison_actuation.app
 - `ORCHESTRATOR_URL`, `POLICY_URL`, `CONSENT_URL`, `IDENTITY_URL`, `CONTEXT_URL`, `CONTEXT_GRAPH_URL`, `RENDERER_URL` — downstream integrations.
 - `ACTUATION_LOGGING_ONLY=true` — bypass drivers and log-only mode.
 - `ACTUATION_ALLOWED_RISK_LEVELS=low,medium` — gate high-risk actions unless explicitly enabled.
+- `ACTUATION_REQUIRE_AUTH=true` and `ACTUATION_SERVICE_TOKEN` — require Bearer token on `/actuate`.
+- `ACTUATION_REQUIRED_SCOPES=actuation.*` — optional comma list; enforced against `policy_context.scopes`.
 
 ## Tests
 ```bash

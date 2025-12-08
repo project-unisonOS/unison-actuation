@@ -40,6 +40,9 @@ CONTEXT_URL = os.getenv("CONTEXT_URL")
 CONTEXT_GRAPH_URL = os.getenv("CONTEXT_GRAPH_URL")
 RENDERER_URL = os.getenv("RENDERER_URL")
 LOGGING_ONLY = os.getenv("ACTUATION_LOGGING_ONLY", "false").lower() == "true"
+REQUIRE_AUTH = os.getenv("ACTUATION_REQUIRE_AUTH", "false").lower() == "true"
+SERVICE_TOKEN = os.getenv("ACTUATION_SERVICE_TOKEN")
+REQUIRED_SCOPES = {s.strip() for s in os.getenv("ACTUATION_REQUIRED_SCOPES", "").split(",") if s.strip()}
 
 # In-memory telemetry buffer for dev/test visibility
 TELEMETRY_LOG: Deque[dict] = deque(maxlen=100)
@@ -164,6 +167,15 @@ async def get_decision(envelope: ActionEnvelope) -> ActionDecision:
     return decision
 
 
+async def verify_auth(request: Request) -> None:
+    if not REQUIRE_AUTH:
+        return
+    auth = request.headers.get("Authorization") or ""
+    token = auth.replace("Bearer ", "").strip()
+    if not SERVICE_TOKEN or token != SERVICE_TOKEN:
+        raise HTTPException(status_code=401, detail="Invalid or missing service token")
+
+
 @app.exception_handler(DriverError)
 async def driver_error_handler(request: Request, exc: DriverError) -> JSONResponse:
     return JSONResponse(status_code=400, content={"detail": str(exc)})
@@ -180,7 +192,11 @@ async def readyz() -> dict:
 
 
 @app.post("/actuate", response_model=ActionResult)
-async def actuate(envelope: ActionEnvelope, decision: ActionDecision = Depends(get_decision)) -> JSONResponse | ActionResult:
+async def actuate(
+    envelope: ActionEnvelope,
+    decision: ActionDecision = Depends(get_decision),
+    _: None = Depends(verify_auth),
+) -> JSONResponse | ActionResult:
     if decision.requires_confirmation:
         pending_payload = {
             "action_id": envelope.action_id,
@@ -201,6 +217,10 @@ async def actuate(envelope: ActionEnvelope, decision: ActionDecision = Depends(g
         allowed = getattr(driver, "max_risk_level")()
         if RiskLevel(envelope.risk_level) > RiskLevel(allowed):
             raise HTTPException(status_code=403, detail="Risk level exceeds driver allowance")
+    if REQUIRED_SCOPES:
+        scopes = envelope.policy_context.scopes
+        if not scopes or not any(scope in REQUIRED_SCOPES or scope.startswith("actuation.") for scope in scopes):
+            raise HTTPException(status_code=403, detail="Missing required actuation scope")
     if decision.rewritten_intent:
         envelope.intent = decision.rewritten_intent
 
