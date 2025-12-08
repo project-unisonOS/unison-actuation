@@ -136,7 +136,10 @@ async def publish_telemetry(
         return
     targets = [url for url in [CONTEXT_URL, CONTEXT_GRAPH_URL, RENDERER_URL] if url]
     async with httpx.AsyncClient(timeout=3.0) as client:
-        tasks = [client.post(f"{t}/telemetry", json=event) for t in targets]
+        tasks = []
+        for t in targets:
+            path = "/telemetry/actuation" if t == CONTEXT_GRAPH_URL else "/telemetry"
+            tasks.append(client.post(f"{t}{path}", json=event))
         try:
             await asyncio.gather(*tasks, return_exceptions=True)
         except Exception:
