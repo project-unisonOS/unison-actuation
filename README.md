@@ -22,6 +22,7 @@ New core service (proposed) — integrates with orchestrator/policy/consent/iden
 - `docker/` — container entrypoint and compose hints.
 - `tests/` — unit tests for envelope validation and driver routing.
 - Endpoints: `POST /actuate` (Action Envelope), `GET /telemetry/recent`, `GET /health`, `GET /readyz`.
+- VDI proxy endpoints: `POST /vdi/tasks/browse`, `/vdi/tasks/form-submit`, `/vdi/tasks/download` (forwarded to `unison-agent-vdi` with policy gating).
 
 ## Run locally
 ```bash

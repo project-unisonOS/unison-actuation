@@ -11,6 +11,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 from collections import deque
+from pydantic import BaseModel, Field
 
 from unison_actuation.drivers.base import DriverError, DriverRegistry
 from unison_actuation.drivers.desktop_driver import DesktopAutomationDriver
@@ -43,6 +44,8 @@ LOGGING_ONLY = os.getenv("ACTUATION_LOGGING_ONLY", "false").lower() == "true"
 REQUIRE_AUTH = os.getenv("ACTUATION_REQUIRE_AUTH", "false").lower() == "true"
 SERVICE_TOKEN = os.getenv("ACTUATION_SERVICE_TOKEN")
 REQUIRED_SCOPES = {s.strip() for s in os.getenv("ACTUATION_REQUIRED_SCOPES", "").split(",") if s.strip()}
+VDI_AGENT_URL = os.getenv("VDI_AGENT_URL", "http://agent-vdi:8083")
+VDI_AGENT_TOKEN = os.getenv("VDI_AGENT_TOKEN")
 
 # In-memory telemetry buffer for dev/test visibility
 TELEMETRY_LOG: Deque[dict] = deque(maxlen=100)
@@ -233,6 +236,89 @@ async def actuate(
 async def telemetry_recent(limit: int = 20) -> List[dict]:
     """Return recent telemetry events (best-effort dev visibility)."""
     return list(TELEMETRY_LOG)[-limit:]
+
+
+# --- VDI task proxy endpoints ---
+
+
+class VdiBrowseAction(BaseModel):
+    click_selector: Optional[str] = None
+    wait_for: Optional[str] = None
+
+
+class VdiBaseRequest(BaseModel):
+    person_id: str
+    url: str
+    session_id: Optional[str] = None
+    wait_for: Optional[str] = None
+    headers: Optional[dict] = None
+    risk_level: RiskLevel = Field(default=RiskLevel.low)
+
+
+class VdiBrowseRequest(VdiBaseRequest):
+    actions: List[VdiBrowseAction] = Field(default_factory=list)
+
+
+class VdiFormField(BaseModel):
+    selector: str
+    value: str
+    type: str = "text"
+
+
+class VdiFormSubmitRequest(VdiBaseRequest):
+    form: List[VdiFormField] = Field(default_factory=list)
+    submit_selector: Optional[str] = None
+
+
+class VdiDownloadRequest(VdiBaseRequest):
+    target_path: Optional[str] = None
+    filename: Optional[str] = None
+
+
+async def _policy_gate(action: str, risk: RiskLevel, person_id: str) -> None:
+    if not POLICY_URL:
+        return
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        resp = await client.post(
+            f"{POLICY_URL}/evaluate",
+            json={"action": action, "context": {"person_id": person_id, "risk_level": risk.value}},
+        )
+        data = resp.json() if resp.content else {}
+        if not resp.ok or not data.get("permitted", True):
+            raise HTTPException(status_code=403, detail=data.get("reason", "policy_denied"))
+
+
+async def _call_vdi(path: str, payload: dict) -> dict:
+    headers = {}
+    if VDI_AGENT_TOKEN:
+        headers["Authorization"] = f"Bearer {VDI_AGENT_TOKEN}"
+    async with httpx.AsyncClient(timeout=40.0) as client:
+        resp = await client.post(f"{VDI_AGENT_URL}{path}", json=payload, headers=headers)
+    if resp.status_code >= 400:
+        try:
+            detail = resp.json()
+        except Exception:
+            detail = resp.text
+        raise HTTPException(status_code=resp.status_code, detail=detail)
+    return resp.json()
+
+
+@app.post("/vdi/tasks/browse")
+async def vdi_browse(task: VdiBrowseRequest, _: None = Depends(verify_auth)) -> dict:
+    await _policy_gate("vdi.browse", task.risk_level, task.person_id)
+    return await _call_vdi("/tasks/browse", task.model_dump())
+
+
+@app.post("/vdi/tasks/form-submit")
+async def vdi_form_submit(task: VdiFormSubmitRequest, _: None = Depends(verify_auth)) -> dict:
+    await _policy_gate("vdi.form_submit", task.risk_level, task.person_id)
+    return await _call_vdi("/tasks/form-submit", task.model_dump())
+
+
+@app.post("/vdi/tasks/download")
+async def vdi_download(task: VdiDownloadRequest, _: None = Depends(verify_auth)) -> dict:
+    await _policy_gate("vdi.download", task.risk_level, task.person_id)
+    return await _call_vdi("/tasks/download", task.model_dump())
 
 
 if __name__ == "__main__":
