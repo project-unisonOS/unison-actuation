@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://unisonos.ai/schemas/action-envelope.json",
+  "title": "ActionEnvelope",
+  "type": "object",
+  "required": ["schema_version", "action_id", "person_id", "target", "intent", "risk_level"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "action_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "person_id": {
+      "type": "string"
+    },
+    "target": {
+      "type": "object",
+      "required": ["device_id", "device_class"],
+      "properties": {
+        "device_id": { "type": "string" },
+        "device_class": { "type": "string" },
+        "location": { "type": "string" },
+        "endpoint": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "intent": {
+      "type": "object",
+      "required": ["name", "parameters"],
+      "properties": {
+        "name": { "type": "string" },
+        "parameters": { "type": "object", "additionalProperties": true },
+        "human_readable": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "risk_level": {
+      "type": "string",
+      "enum": ["low", "medium", "high"]
+    },
+    "constraints": {
+      "type": "object",
+      "properties": {
+        "max_duration_ms": { "type": "integer", "minimum": 1 },
+        "required_confirmations": { "type": "integer", "minimum": 0 },
+        "quiet_hours": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-2][0-9]:[0-5][0-9]-[0-2][0-9]:[0-5][0-9]$"
+          }
+        },
+        "allowed_risk_levels": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["low", "medium", "high"] }
+        }
+      },
+      "additionalProperties": false,
+      "default": {}
+    },
+    "policy_context": {
+      "type": "object",
+      "properties": {
+        "scopes": { "type": "array", "items": { "type": "string" } },
+        "consent_reference": { "type": "string" },
+        "justification": { "type": "string" },
+        "risk_level": { "type": "string", "enum": ["low", "medium", "high"] }
+      },
+      "additionalProperties": false,
+      "default": {}
+    },
+    "telemetry_channel": {
+      "type": "object",
+      "required": ["topic"],
+      "properties": {
+        "topic": { "type": "string" },
+        "delivery": { "type": "string", "enum": ["stream", "batch"], "default": "stream" },
+        "include_parameters": { "type": "boolean", "default": true }
+      },
+      "additionalProperties": false
+    },
+    "provenance": {
+      "type": "object",
+      "properties": {
+        "source_intent": { "type": "string" },
+        "orchestrator_task_id": { "type": "string" },
+        "model_version": { "type": "string" },
+        "generated_at": { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": false
+    },
+    "correlation_id": { "type": "string" },
+    "created_at": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}
