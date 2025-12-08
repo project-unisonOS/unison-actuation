@@ -8,7 +8,7 @@ Unison Actuation is the deterministic control plane for any physical or high-imp
 2. **Envelope validation** — `unison-actuation` performs JSON Schema + Pydantic validation and checks `ACTUATION_ALLOWED_RISK_LEVELS`.
 3. **Identity & consent** — tokens are validated via `unison-identity` (future), and existing grants are fetched from `unison-consent` when `policy_context.consent_reference` is absent.
 4. **Policy** — envelope is normalized and posted to `unison-policy /evaluate`. Decisions may reject, rewrite intent/parameters, or request confirmation.
-5. **Confirmation (optional)** — renderer/context surface a confirmation ask; `POST /actions/{id}/confirm` (future) unblocks execution.
+5. **Confirmation (optional)** — renderer/context surface a confirmation ask; the service returns 202 `awaiting_confirmation` (future `/actions/{id}/confirm` will unblock execution).
 6. **Driver routing** — the driver registry selects a driver by `intent.name` + `target.device_class`. `ACTUATION_LOGGING_ONLY=true` forces `LoggingDriver`.
 7. **Execution** — driver executes deterministically (idempotent where possible) and produces an `ActionResult`.
 8. **Telemetry** — lifecycle events are sent to `unison-context`, `unison-context-graph`, and optionally `unison-experience-renderer` via the `telemetry_channel`.
@@ -19,6 +19,7 @@ Unison Actuation is the deterministic control plane for any physical or high-imp
 - **Policy & consent**: Hard gate via `unison-policy` + `unison-consent`. `ACTUATION_ALLOWED_RISK_LEVELS` blocks high-risk by default.
 - **Driver sandbox**: Drivers are isolated modules. High-impact drivers should run in restricted containers with explicit capabilities.
 - **Logging-only mode**: `ACTUATION_LOGGING_ONLY=true` ensures dry runs in development.
+- **Confirmation**: High-risk decisions return 202 with `requires_confirmation` and log telemetry without executing drivers.
 
 ## Driver Plugin System
 - **Base class**: `drivers/base.py` defines `BaseDriver`, `Capability`, and `DriverRegistry`.
@@ -29,11 +30,12 @@ Unison Actuation is the deterministic control plane for any physical or high-imp
 - **Telemetry**: drivers return `ActionResult.telemetry`; the service forwards to context/renderer.
 
 ## Telemetry Pipeline
-- Publishes best-effort lifecycle events (`submitted`, `permitted`, `executing`, `completed/failed`) to:
+- Publishes best-effort lifecycle events (`awaiting_confirmation`, `completed/failed`) to:
   - `unison-context` (for person/session timeline),
   - `unison-context-graph` (for graph state),
   - `unison-experience-renderer` (for live UX updates).
 - `telemetry_channel.topic` allows routing to specific graph streams or renderer channels.
+- `GET /telemetry/recent` exposes a bounded in-memory buffer for devstack/smoke tests.
 
 ## Logging Strategy
 - Structured JSON logs with `action_id`, `person_id`, `risk_level`, and driver name.

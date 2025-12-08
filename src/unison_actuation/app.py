@@ -3,13 +3,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Optional
+from typing import Optional, Deque, List
 
 import httpx
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
+from collections import deque
 
 from unison_actuation.drivers.base import DriverError, DriverRegistry
 from unison_actuation.drivers.desktop_driver import DesktopAutomationDriver
@@ -38,6 +39,9 @@ CONTEXT_URL = os.getenv("CONTEXT_URL")
 CONTEXT_GRAPH_URL = os.getenv("CONTEXT_GRAPH_URL")
 RENDERER_URL = os.getenv("RENDERER_URL")
 LOGGING_ONLY = os.getenv("ACTUATION_LOGGING_ONLY", "false").lower() == "true"
+
+# In-memory telemetry buffer for dev/test visibility
+TELEMETRY_LOG: Deque[dict] = deque(maxlen=100)
 
 driver_registry = DriverRegistry(
     [
@@ -111,22 +115,28 @@ async def evaluate_policy(envelope: ActionEnvelope) -> ActionDecision:
 
 
 async def publish_telemetry(
-    envelope: ActionEnvelope, result: ActionResult, channel: Optional[TelemetryChannel]
+    envelope: ActionEnvelope,
+    result: ActionResult,
+    channel: Optional[TelemetryChannel],
+    lifecycle: str = "completed",
 ) -> None:
     """Best-effort telemetry publishing."""
-    if not channel:
-        return
-    payload = {
+    event = {
         "action_id": envelope.action_id,
         "status": result.status,
+        "lifecycle": lifecycle,
         "device_id": envelope.target.device_id,
         "device_class": envelope.target.device_class,
         "intent": envelope.intent.name,
         "telemetry": result.telemetry,
     }
+    TELEMETRY_LOG.append(event)
+
+    if not channel:
+        return
     targets = [url for url in [CONTEXT_URL, CONTEXT_GRAPH_URL, RENDERER_URL] if url]
     async with httpx.AsyncClient(timeout=3.0) as client:
-        tasks = [client.post(f"{t}/telemetry", json=payload) for t in targets]
+        tasks = [client.post(f"{t}/telemetry", json=event) for t in targets]
         try:
             await asyncio.gather(*tasks, return_exceptions=True)
         except Exception:
@@ -137,7 +147,8 @@ async def ensure_confirmed(envelope: ActionEnvelope, decision: ActionDecision) -
     if not decision.requires_confirmation:
         return
     # In a full implementation this would emit a confirmation request via renderer/context.
-    raise HTTPException(status_code=412, detail="Confirmation required before actuation")
+    # Here we short-circuit with a 202 response handled in the route.
+    return
 
 
 async def get_decision(envelope: ActionEnvelope) -> ActionDecision:
@@ -164,7 +175,22 @@ async def readyz() -> dict:
 
 
 @app.post("/actuate", response_model=ActionResult)
-async def actuate(envelope: ActionEnvelope, decision: ActionDecision = Depends(get_decision)) -> ActionResult:
+async def actuate(envelope: ActionEnvelope, decision: ActionDecision = Depends(get_decision)) -> JSONResponse | ActionResult:
+    if decision.requires_confirmation:
+        pending_payload = {
+            "action_id": envelope.action_id,
+            "status": "awaiting_confirmation",
+            "requires_confirmation": True,
+            "risk_level": decision.risk_level,
+        }
+        await publish_telemetry(
+            envelope,
+            ActionResult(action_id=envelope.action_id, status="pending"),
+            envelope.telemetry_channel,
+            lifecycle="awaiting_confirmation",
+        )
+        return JSONResponse(status_code=202, content=pending_payload)
+
     driver = LoggingDriver() if LOGGING_ONLY else driver_registry.route(envelope)
     if decision.rewritten_intent:
         envelope.intent = decision.rewritten_intent
@@ -172,6 +198,12 @@ async def actuate(envelope: ActionEnvelope, decision: ActionDecision = Depends(g
     result = await driver.execute(envelope)
     await publish_telemetry(envelope, result, envelope.telemetry_channel)
     return result
+
+
+@app.get("/telemetry/recent")
+async def telemetry_recent(limit: int = 20) -> List[dict]:
+    """Return recent telemetry events (best-effort dev visibility)."""
+    return list(TELEMETRY_LOG)[-limit:]
 
 
 if __name__ == "__main__":

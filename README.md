@@ -20,6 +20,7 @@ New core service (proposed) — integrates with orchestrator/policy/consent/iden
 - `docs/architecture.md` — service architecture and integration contract.
 - `docker/` — container entrypoint and compose hints.
 - `tests/` — unit tests for envelope validation and driver routing.
+- Endpoints: `POST /actuate` (Action Envelope), `GET /telemetry/recent`, `GET /health`, `GET /readyz`.
 
 ## Run locally
 ```bash
