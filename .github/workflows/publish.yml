@@ -16,5 +16,7 @@ jobs:
     with:
       image_name: unison-actuation
       domain: actuation
-      service_port: "8080"
+      service_port: "8086"
+      dockerfile: docker/Dockerfile
+      context: .
     secrets: inherit
