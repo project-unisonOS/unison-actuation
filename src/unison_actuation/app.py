@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
+import time
+import uuid
 from typing import Optional, Deque, List
 
 import httpx
@@ -143,6 +146,8 @@ async def publish_telemetry(
     if not channel:
         return
     targets = [url for url in [CONTEXT_URL, CONTEXT_GRAPH_URL, RENDERER_URL] if url]
+    if not targets:
+        return
     async with httpx.AsyncClient(timeout=3.0) as client:
         tasks = []
         for t in targets:
@@ -247,12 +252,17 @@ class VdiBrowseAction(BaseModel):
 
 
 class VdiBaseRequest(BaseModel):
+    action_id: Optional[str] = None
+    trace_id: Optional[str] = None
     person_id: str
     url: str
     session_id: Optional[str] = None
     wait_for: Optional[str] = None
     headers: Optional[dict] = None
     risk_level: RiskLevel = Field(default=RiskLevel.low)
+    telemetry_channel: Optional[TelemetryChannel] = Field(
+        default_factory=lambda: TelemetryChannel(topic="vdi", delivery="stream", include_parameters=False)
+    )
 
 
 class VdiBrowseRequest(VdiBaseRequest):
@@ -288,37 +298,275 @@ async def _policy_gate(action: str, risk: RiskLevel, person_id: str) -> None:
             raise HTTPException(status_code=403, detail=data.get("reason", "policy_denied"))
 
 
+async def publish_vdi_telemetry(
+    *,
+    action_id: str,
+    intent: str,
+    status: str,
+    lifecycle: str,
+    task: VdiBaseRequest,
+    telemetry: Optional[dict] = None,
+    detail: Optional[str] = None,
+) -> None:
+    event = {
+        "action_id": action_id,
+        "status": status,
+        "lifecycle": lifecycle,
+        "device_id": "vdi",
+        "device_class": "browser",
+        "intent": intent,
+        "telemetry": {
+            "person_id": task.person_id,
+            "session_id": task.session_id,
+            "url": task.url,
+            "trace_id": task.trace_id,
+            **(telemetry or {}),
+        },
+    }
+    if detail:
+        event["detail"] = detail
+    TELEMETRY_LOG.append(event)
+
+    channel = task.telemetry_channel
+    if not channel:
+        return
+    targets = [url for url in [CONTEXT_URL, CONTEXT_GRAPH_URL, RENDERER_URL] if url]
+    if not targets:
+        return
+    async with httpx.AsyncClient(timeout=3.0) as client:
+        tasks = []
+        for t in targets:
+            path = "/telemetry/actuation" if t == CONTEXT_GRAPH_URL else "/telemetry"
+            tasks.append(client.post(f"{t}{path}", json=event))
+        try:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        except Exception:
+            logger.debug("VDI telemetry publishing failed", exc_info=True)
+
+
 async def _call_vdi(path: str, payload: dict) -> dict:
     headers = {}
     if VDI_AGENT_TOKEN:
         headers["Authorization"] = f"Bearer {VDI_AGENT_TOKEN}"
-    async with httpx.AsyncClient(timeout=40.0) as client:
-        resp = await client.post(f"{VDI_AGENT_URL}{path}", json=payload, headers=headers)
-    if resp.status_code >= 400:
-        try:
-            detail = resp.json()
-        except Exception:
-            detail = resp.text
-        raise HTTPException(status_code=resp.status_code, detail=detail)
-    return resp.json()
+    attempts = max(1, int(os.getenv("VDI_RETRY_ATTEMPTS", "3")))
+    backoff_base = float(os.getenv("VDI_RETRY_BACKOFF_BASE_SECONDS", "0.25"))
+    backoff_max = float(os.getenv("VDI_RETRY_MAX_DELAY_SECONDS", "2.0"))
+    timeout = float(os.getenv("VDI_REQUEST_TIMEOUT_SECONDS", "40.0"))
+
+    last_detail: object = "unknown_error"
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        for attempt in range(1, attempts + 1):
+            try:
+                resp = await client.post(f"{VDI_AGENT_URL}{path}", json=payload, headers=headers)
+            except httpx.RequestError as exc:
+                last_detail = str(exc)
+                if attempt >= attempts:
+                    raise HTTPException(status_code=502, detail={"error": "vdi_unavailable", "detail": last_detail})
+                delay = min(backoff_max, backoff_base * (2 ** (attempt - 1)))
+                await asyncio.sleep(delay)
+                continue
+
+            if resp.status_code in {429} or resp.status_code >= 500:
+                try:
+                    last_detail = resp.json()
+                except Exception:
+                    last_detail = resp.text
+                if attempt >= attempts:
+                    raise HTTPException(status_code=resp.status_code, detail=last_detail)
+                delay = min(backoff_max, backoff_base * (2 ** (attempt - 1)))
+                await asyncio.sleep(delay)
+                continue
+
+            if resp.status_code >= 400:
+                try:
+                    detail = resp.json()
+                except Exception:
+                    detail = resp.text
+                raise HTTPException(status_code=resp.status_code, detail=detail)
+
+            return resp.json()
+
+    raise HTTPException(status_code=502, detail={"error": "vdi_unavailable", "detail": last_detail})
 
 
 @app.post("/vdi/tasks/browse")
 async def vdi_browse(task: VdiBrowseRequest, _: None = Depends(verify_auth)) -> dict:
     await _policy_gate("vdi.browse", task.risk_level, task.person_id)
-    return await _call_vdi("/tasks/browse", task.model_dump())
+    action_id = task.action_id or f"vdi_{uuid.uuid4().hex}"
+    await publish_vdi_telemetry(
+        action_id=action_id,
+        intent="vdi.browse",
+        status="pending",
+        lifecycle="started",
+        task=task,
+    )
+    done = asyncio.Event()
+    interval = float(os.getenv("VDI_PROGRESS_INTERVAL_SECONDS", "0"))
+
+    async def _heartbeat() -> None:
+        if interval <= 0:
+            return
+        start = time.monotonic()
+        while not done.is_set():
+            await asyncio.sleep(interval)
+            if done.is_set():
+                break
+            await publish_vdi_telemetry(
+                action_id=action_id,
+                intent="vdi.browse",
+                status="pending",
+                lifecycle="in_progress",
+                task=task,
+                telemetry={"elapsed_ms": int((time.monotonic() - start) * 1000)},
+            )
+
+    hb_task = asyncio.create_task(_heartbeat())
+    try:
+        payload = task.model_dump(exclude={"telemetry_channel", "action_id", "trace_id"}, exclude_none=True)
+        result = await _call_vdi("/tasks/browse", payload)
+        await publish_vdi_telemetry(
+            action_id=action_id,
+            intent="vdi.browse",
+            status="ok",
+            lifecycle="completed",
+            task=task,
+        )
+        return result
+    except HTTPException as exc:
+        await publish_vdi_telemetry(
+            action_id=action_id,
+            intent="vdi.browse",
+            status="error",
+            lifecycle="failed",
+            task=task,
+            detail=str(exc.detail),
+        )
+        raise
+    finally:
+        done.set()
+        hb_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await hb_task
 
 
 @app.post("/vdi/tasks/form-submit")
 async def vdi_form_submit(task: VdiFormSubmitRequest, _: None = Depends(verify_auth)) -> dict:
     await _policy_gate("vdi.form_submit", task.risk_level, task.person_id)
-    return await _call_vdi("/tasks/form-submit", task.model_dump())
+    action_id = task.action_id or f"vdi_{uuid.uuid4().hex}"
+    await publish_vdi_telemetry(
+        action_id=action_id,
+        intent="vdi.form_submit",
+        status="pending",
+        lifecycle="started",
+        task=task,
+    )
+    done = asyncio.Event()
+    interval = float(os.getenv("VDI_PROGRESS_INTERVAL_SECONDS", "0"))
+
+    async def _heartbeat() -> None:
+        if interval <= 0:
+            return
+        start = time.monotonic()
+        while not done.is_set():
+            await asyncio.sleep(interval)
+            if done.is_set():
+                break
+            await publish_vdi_telemetry(
+                action_id=action_id,
+                intent="vdi.form_submit",
+                status="pending",
+                lifecycle="in_progress",
+                task=task,
+                telemetry={"elapsed_ms": int((time.monotonic() - start) * 1000)},
+            )
+
+    hb_task = asyncio.create_task(_heartbeat())
+    try:
+        payload = task.model_dump(exclude={"telemetry_channel", "action_id", "trace_id"}, exclude_none=True)
+        result = await _call_vdi("/tasks/form-submit", payload)
+        await publish_vdi_telemetry(
+            action_id=action_id,
+            intent="vdi.form_submit",
+            status="ok",
+            lifecycle="completed",
+            task=task,
+        )
+        return result
+    except HTTPException as exc:
+        await publish_vdi_telemetry(
+            action_id=action_id,
+            intent="vdi.form_submit",
+            status="error",
+            lifecycle="failed",
+            task=task,
+            detail=str(exc.detail),
+        )
+        raise
+    finally:
+        done.set()
+        hb_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await hb_task
 
 
 @app.post("/vdi/tasks/download")
 async def vdi_download(task: VdiDownloadRequest, _: None = Depends(verify_auth)) -> dict:
     await _policy_gate("vdi.download", task.risk_level, task.person_id)
-    return await _call_vdi("/tasks/download", task.model_dump())
+    action_id = task.action_id or f"vdi_{uuid.uuid4().hex}"
+    await publish_vdi_telemetry(
+        action_id=action_id,
+        intent="vdi.download",
+        status="pending",
+        lifecycle="started",
+        task=task,
+    )
+    done = asyncio.Event()
+    interval = float(os.getenv("VDI_PROGRESS_INTERVAL_SECONDS", "0"))
+
+    async def _heartbeat() -> None:
+        if interval <= 0:
+            return
+        start = time.monotonic()
+        while not done.is_set():
+            await asyncio.sleep(interval)
+            if done.is_set():
+                break
+            await publish_vdi_telemetry(
+                action_id=action_id,
+                intent="vdi.download",
+                status="pending",
+                lifecycle="in_progress",
+                task=task,
+                telemetry={"elapsed_ms": int((time.monotonic() - start) * 1000)},
+            )
+
+    hb_task = asyncio.create_task(_heartbeat())
+    try:
+        payload = task.model_dump(exclude={"telemetry_channel", "action_id", "trace_id"}, exclude_none=True)
+        result = await _call_vdi("/tasks/download", payload)
+        await publish_vdi_telemetry(
+            action_id=action_id,
+            intent="vdi.download",
+            status="ok",
+            lifecycle="completed",
+            task=task,
+        )
+        return result
+    except HTTPException as exc:
+        await publish_vdi_telemetry(
+            action_id=action_id,
+            intent="vdi.download",
+            status="error",
+            lifecycle="failed",
+            task=task,
+            detail=str(exc.detail),
+        )
+        raise
+    finally:
+        done.set()
+        hb_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await hb_task
 
 
 if __name__ == "__main__":

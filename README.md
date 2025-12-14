@@ -39,6 +39,10 @@ UVICORN_RELOAD=true python -m unison_actuation.app
 - `ACTUATION_ALLOWED_RISK_LEVELS=low,medium` — gate high-risk actions unless explicitly enabled.
 - `ACTUATION_REQUIRE_AUTH=true` and `ACTUATION_SERVICE_TOKEN` — require Bearer token on `/actuate`.
 - `ACTUATION_REQUIRED_SCOPES=actuation.*` — optional comma list; enforced against `policy_context.scopes`.
+- `VDI_AGENT_URL` / `VDI_AGENT_TOKEN` — upstream VDI task service (`unison-agent-vdi`) and optional token.
+- `VDI_PROGRESS_INTERVAL_SECONDS` — emit periodic in-progress telemetry while waiting (0 disables).
+- `VDI_RETRY_ATTEMPTS`, `VDI_RETRY_BACKOFF_BASE_SECONDS`, `VDI_RETRY_MAX_DELAY_SECONDS` — bounded retry/backoff on `429/5xx` and network errors.
+- `VDI_REQUEST_TIMEOUT_SECONDS` — per-attempt timeout for upstream VDI calls.
 
 ## Tests
 ```bash
