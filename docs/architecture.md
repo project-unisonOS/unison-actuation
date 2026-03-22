@@ -1,21 +1,21 @@
 # Unison Actuation Architecture
 
 ## Purpose
-Unison Actuation is the deterministic control plane for any physical or high-impact digital actuator. It accepts **Action Envelopes** from `unison-orchestrator`, validates identity/consent/policy, classifies risk, routes to the correct driver, and emits telemetry back into `unison-context`, `unison-context-graph`, and the renderer.
+Unison Actuation is the deterministic control plane for any physical or high-impact digital actuator. It accepts **Action Envelopes** from `unison-orchestrator`, validates envelope structure plus policy constraints, classifies risk, routes to the correct driver, and emits telemetry back into `unison-context`, `unison-context-graph`, and the renderer.
 
 ## Request / Response Flow
 1. **Proposal** — `unison-orchestrator` emits a `proposed_action` envelope (schema in `schemas/action-envelope.schema.json`) to `POST /actuate`.
 2. **Envelope validation** — `unison-actuation` performs JSON Schema + Pydantic validation and checks `ACTUATION_ALLOWED_RISK_LEVELS`.
-3. **Identity & consent** — tokens are validated via `unison-identity` (future), and existing grants are fetched from `unison-consent` when `policy_context.consent_reference` is absent.
+3. **Auth context** — the service can require bearer auth on `/actuate`; consent references are expected to be carried in the envelope context by upstream services.
 4. **Policy** — envelope is normalized and posted to `unison-policy /evaluate`. Decisions may reject, rewrite intent/parameters, or request confirmation.
 5. **Confirmation (optional)** — renderer/context surface a confirmation ask; the service returns 202 `awaiting_confirmation` (future `/actions/{id}/confirm` will unblock execution).
 6. **Driver routing** — the driver registry selects a driver by `intent.name` + `target.device_class`. `ACTUATION_LOGGING_ONLY=true` forces `LoggingDriver`.
 7. **Execution** — driver executes deterministically (idempotent where possible) and produces an `ActionResult`.
 8. **Telemetry** — lifecycle events are sent to `unison-context`, `unison-context-graph`, and optionally `unison-experience-renderer` via the `telemetry_channel`.
-9. **Audit** — all decisions (permit/reject/confirm) and executions are logged to `unison-policy /audit` (future hook) and internal logs.
+9. **Audit/logging** — decisions and executions are recorded in structured service logs and telemetry payloads; there is no dedicated `unison-policy /audit` integration in the current implementation.
 
 ## Safety Boundaries
-- **Ingress**: Only accepts structured envelopes; no free-form LLM actions. JWTs and scopes validated by `unison-identity`.
+- **Ingress**: Only accepts structured envelopes; no free-form LLM actions.
 - **Policy & consent**: Hard gate via `unison-policy` + `unison-consent`. `ACTUATION_ALLOWED_RISK_LEVELS` blocks high-risk by default.
 - **Driver sandbox**: Drivers are isolated modules. High-impact drivers should run in restricted containers with explicit capabilities.
 - **Logging-only mode**: `ACTUATION_LOGGING_ONLY=true` ensures dry runs in development.
@@ -44,7 +44,7 @@ Unison Actuation is the deterministic control plane for any physical or high-imp
 
 ## Integration Contracts
 - **Orchestrator**: emits `proposed_action` tool output; posts Action Envelopes to `/actuate`; streams telemetry back to renderer/context graph; handles async updates.
-- **Policy / Consent / Identity**: extend scopes `actuation.*`, `actuation.home.*`, `actuation.robot.*`, `actuation.desktop.*`; use `/evaluate`, `/consent`, and `/audit`.
+- **Policy / Consent / Identity**: current runtime integration centers on `unison-policy /evaluate`; consent and stronger identity wiring remain upstream or future work.
 - **Context / Context-Graph**: receive telemetry for lifecycle and device health; surface confirmations and state deltas.
 - **Renderer**: displays confirmations, progress, and outcomes; may request repeats/aborts.
 

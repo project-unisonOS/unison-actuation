@@ -3,7 +3,7 @@
 Safety-first actuation service for UnisonOS. Transforms high-level intents from `unison-orchestrator` into deterministic, policy-validated actions for physical and high-impact digital actuators. Provides envelope validation, policy/consent enforcement, driver routing, telemetry, and audit logging.
 
 ## Status
-New core service (proposed) — integrates with orchestrator/policy/consent/identity/context; ships logging-only and mock drivers for devstack.
+Core service (active, early) — integrates with orchestrator/policy/consent/identity/context and currently ships logging-only plus mock-driver flows for dev and test coverage.
 
 ## Features (initial scope)
 - Accepts structured **Action Envelopes** from orchestrator and validates identity, scopes, and policy.
